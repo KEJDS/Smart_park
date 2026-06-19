@@ -171,6 +171,14 @@ class DatabaseManager:
                 self.cursor.execute("INSERT INTO vehicles (driver_name, plate_number, vehicle_type) VALUES (?, ?, ?)", (driver_name, plate, v_type))
                 vehicle_id = self.cursor.lastrowid
 
+            if plate.strip() == "":
+                raise ValueError("License plate number cannot be empty.")
+            
+            if plate.strip() != "":
+                self.cursor.execute("SELECT COUNT(*) FROM parking_sessions s JOIN vehicles v ON s.vehicle_id = v.vehicle_id WHERE v.plate_number=? AND s.exit_time IS NULL", (plate,))
+                if self.cursor.fetchone()[0] > 0:
+                    raise ValueError("This vehicle already has an active parking session.")
+            
             self.cursor.execute("SELECT slot_id FROM parking_slots WHERE slot_identifier=?", (slot_id_str,))
             slot_id = self.cursor.fetchone()[0]
             
@@ -188,7 +196,7 @@ class DatabaseManager:
             self.conn.rollback()
             print("Booking Error:", e)
             return False
-
+        
     def free_slot(self, slot_id_str):
         self.cursor.execute("SELECT slot_id FROM parking_slots WHERE slot_identifier=?", (slot_id_str,))
         slot_id = self.cursor.fetchone()[0]
@@ -241,7 +249,7 @@ class DatabaseManager:
             self.conn.commit()
             return True
         except sqlite3.IntegrityError:
-            return False 
+            return False
 
     def update_system_user(self, account_id, new_username, new_password, new_role):
         try:
