@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-from PIL import Image, ImageTk
 import sqlite3
 from datetime import datetime, timezone, timedelta
 
@@ -607,8 +606,9 @@ class AvailableSlotsPage(tk.Frame):
                     self.selected_slot = None
                     self.build_page()
             ModernButton(footer, text="Flag Maintenance", bg_color="#64748B", hover_color="#475569", padx=15, pady=8, command=flag_maintenance).pack(side="right", padx=(0, 10))
-
-        ModernButton(footer, text="Assign Slot", bg_color=C_AVAILABLE, hover_color="#059669", padx=25, pady=8, command=self.open_booking_dialog).pack(side="right")
+            
+        if self.selected_slot:
+            ModernButton(footer, text="Assign Slot", bg_color=C_AVAILABLE, hover_color="#059669", padx=25, pady=8, command=self.open_booking_dialog).pack(side="right")
 
     def switch_tab(self, vehicle_type):
         self.current_tab = vehicle_type
@@ -936,3 +936,6 @@ class AdminSettingsPage(tk.Frame):
 if __name__ == "__main__":
     app = ParkingSystemController()
     app.mainloop()
+
+
+C_MAIN_BG         
