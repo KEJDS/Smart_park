@@ -170,6 +170,9 @@ class DatabaseManager:
             else:
                 self.cursor.execute("INSERT INTO vehicles (driver_name, plate_number, vehicle_type) VALUES (?, ?, ?)", (driver_name, plate, v_type))
                 vehicle_id = self.cursor.lastrowid
+                
+            if driver_name.strip() == "":
+                raise ValueError("Driver name cannot be empty.")
 
             if plate.strip() == "":
                 raise ValueError("License plate number cannot be empty.")
@@ -728,11 +731,15 @@ class AvailableSlotsPage(tk.Frame):
             # Use the tracked current_account_id to log who issued this ticket
             session_id = self.controller.db.book_slot(self.selected_slot, driver_name, plate_number, self.current_tab, self.controller.current_account_id)
             
+            if not driver_name.strip() or not plate_number.strip():
+                messagebox.showerror("Input Error", "All fields must be filled out.", parent=dialog)
+                return
+            
             if session_id:
                 booked_slot = self.selected_slot; self.selected_slot = None; self.build_page(); dialog.destroy()
                 self.controller.show_invoice_dialog(session_id, driver_name, plate_number, booked_slot, self.current_tab)
-            else: messagebox.showerror("Error", "Failed to assign. Ensure Plate is unique.", parent=dialog)
-
+            else: messagebox.showerror("Booking Error", "This vehicle already has an active parking session.", parent=dialog)
+            
         ModernButton(dialog, text="Confirm", bg_color=C_AVAILABLE, hover_color="#059669", pady=10, command=save_to_db).pack(fill="x", padx=30, pady=10)
 
 # 4. HISTORY PAGE 
