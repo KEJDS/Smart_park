@@ -7,7 +7,6 @@ from datetime import datetime, timezone, timedelta
 # --- CONFIGURE PHILIPPINE TIME (PHT) ---
 PHT = timezone(timedelta(hours=8))
 
-# --- PUP COLOR PALETTE ---
 C_SIDEBAR = "#6D0E10"           
 C_SIDEBAR_DARK = "#4A090B"      
 C_SIDEBAR_ACTIVE = "#FFFFFF"    
@@ -25,9 +24,7 @@ def get_pht_time():
     """Forces strict Philippine Time (UTC+8)."""
     return (datetime.now(timezone.utc) + timedelta(hours=8))
 
-# ==========================================
-# DATABASE MANAGER (REFACTORED - NO USER ID)
-# ==========================================
+# DATABASE MANAGER
 class DatabaseManager:
     def __init__(self, db_name="parking_database.db"):
         self.conn = sqlite3.connect(db_name)
@@ -36,6 +33,7 @@ class DatabaseManager:
 
     def setup_database(self):
         try:
+            # Added account_id to parking_sessions to link the issuing employee!
             self.cursor.executescript('''
                 CREATE TABLE IF NOT EXISTS vehicles (
                     vehicle_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,20 +47,22 @@ class DatabaseManager:
                     category TEXT NOT NULL,
                     status TEXT CHECK(status IN ('Available', 'Occupied', 'Maintenance')) DEFAULT 'Available'
                 );
-                CREATE TABLE IF NOT EXISTS parking_sessions (
-                    session_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    vehicle_id INTEGER,
-                    slot_id INTEGER,
-                    entry_time TEXT,
-                    exit_time TEXT,
-                    FOREIGN KEY (vehicle_id) REFERENCES vehicles(vehicle_id),
-                    FOREIGN KEY (slot_id) REFERENCES parking_slots(slot_id)
-                );
                 CREATE TABLE IF NOT EXISTS system_users (
                     account_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     password TEXT NOT NULL,
                     role TEXT CHECK(role IN ('Admin', 'Employee')) NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS parking_sessions (
+                    session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    vehicle_id INTEGER,
+                    slot_id INTEGER,
+                    account_id INTEGER, 
+                    entry_time TEXT,
+                    exit_time TEXT,
+                    FOREIGN KEY (vehicle_id) REFERENCES vehicles(vehicle_id),
+                    FOREIGN KEY (slot_id) REFERENCES parking_slots(slot_id),
+                    FOREIGN KEY (account_id) REFERENCES system_users(account_id)
                 );
             ''')
             self.conn.commit()
@@ -92,9 +92,10 @@ class DatabaseManager:
             self.conn.commit()
 
     def verify_login(self, username, password, required_role):
-        self.cursor.execute("SELECT role FROM system_users WHERE username=? AND password=?", (username, password))
+        self.cursor.execute("SELECT account_id, role FROM system_users WHERE username=? AND password=?", (username, password))
         result = self.cursor.fetchone()
-        if result and result[0] == required_role: return True
+        if result and result[1] == required_role: 
+            return result[0] # Return the account_id to track who is logging in
         return False
 
     def get_dashboard_stats(self):
@@ -159,9 +160,8 @@ class DatabaseManager:
             self.conn.rollback()
             return False
 
-    def book_slot(self, slot_id_str, driver_name, plate, v_type):
+    def book_slot(self, slot_id_str, driver_name, plate, v_type, account_id):
         try:
-            # Check if vehicle exists, update driver name if it changed, else insert new
             self.cursor.execute("SELECT vehicle_id FROM vehicles WHERE plate_number=?", (plate,))
             v_res = self.cursor.fetchone()
             if v_res:
@@ -177,7 +177,9 @@ class DatabaseManager:
             pht_now = get_pht_time().strftime("%Y-%m-%d %H:%M:%S")
             
             self.cursor.execute("UPDATE parking_slots SET status='Occupied' WHERE slot_id=?", (slot_id,))
-            self.cursor.execute("INSERT INTO parking_sessions (vehicle_id, slot_id, entry_time) VALUES (?, ?, ?)", (vehicle_id, slot_id, pht_now))
+            
+            # Save the account_id of the user who booked it!
+            self.cursor.execute("INSERT INTO parking_sessions (vehicle_id, slot_id, account_id, entry_time) VALUES (?, ?, ?, ?)", (vehicle_id, slot_id, account_id, pht_now))
             
             session_id = self.cursor.lastrowid
             self.conn.commit()
@@ -196,10 +198,14 @@ class DatabaseManager:
         self.conn.commit()
 
     def get_history(self, category_filter="All", time_filter="All Time"):
+        # We now LEFT JOIN the system_users table to fetch the username of the issuer
         query = '''
-            SELECT s.session_id, ps.slot_identifier, v.driver_name, v.plate_number, v.vehicle_type, s.entry_time, s.exit_time
-            FROM parking_sessions s JOIN vehicles v ON s.vehicle_id = v.vehicle_id
-            JOIN parking_slots ps ON s.slot_id = ps.slot_id WHERE 1=1
+            SELECT s.session_id, ps.slot_identifier, v.driver_name, v.plate_number, v.vehicle_type, s.entry_time, s.exit_time, su.username
+            FROM parking_sessions s 
+            JOIN vehicles v ON s.vehicle_id = v.vehicle_id
+            JOIN parking_slots ps ON s.slot_id = ps.slot_id 
+            LEFT JOIN system_users su ON s.account_id = su.account_id
+            WHERE 1=1
         '''
         params = []
         
@@ -261,9 +267,7 @@ class DatabaseManager:
         self.cursor.execute(query)
         return self.cursor.fetchall()
 
-# ==========================================
 # CUSTOM WIDGETS & UI HELPERS
-# ==========================================
 class ModernButton(tk.Label):
     def __init__(self, parent, text, bg_color, hover_color, fg_color="white", command=None, font_style=("Segoe UI", 10, "bold"), **kwargs):
         super().__init__(parent, text=text, bg=bg_color, fg=fg_color, font=font_style, cursor="hand2", **kwargs)
@@ -281,7 +285,6 @@ def create_modern_entry(parent, show="", width=25):
     return entry
 
 def build_top_header(parent, page_title, breadcrumb):
-    """Creates the standard top header. SEARCH BAR REMOVED."""
     header = tk.Frame(parent, bg=C_MAIN_BG)
     header.pack(fill="x", pady=(0, 25))
     left = tk.Frame(header, bg=C_MAIN_BG)
@@ -296,9 +299,7 @@ def create_info_card(parent, title, desc):
     tk.Label(card, text=desc, font=("Segoe UI", 10), fg=C_TEXT_MUTED, bg=C_CARD_BG, wraplength=250, justify="left").pack(anchor="w", pady=(5, 15))
     return card
 
-# ==========================================
 # APP CONTROLLER
-# ==========================================
 class ParkingSystemController(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -311,8 +312,11 @@ class ParkingSystemController(tk.Tk):
         style.configure("TCombobox", fieldbackground="#FFFFFF", background="#FFFFFF", borderwidth=1, bordercolor="#CBD5E1", arrowsize=12)
 
         self.db = DatabaseManager()
+        
+        # State Variables
         self.current_user_name = "Guest"
         self.current_user_role = "None" 
+        self.current_account_id = None # Tracks the active user's DB ID
         
         self.container = tk.Frame(self)
         self.container.pack(side="top", fill="both", expand=True)
@@ -418,6 +422,7 @@ def build_sidebar(parent_frame, controller, active_page):
     
     def confirm_logout():
         if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
+            controller.current_account_id = None
             controller.show_frame("WelcomePage")
 
     logout_btn = tk.Label(profile_panel, text="⮞", font=("Segoe UI", 14), fg="#D1D5DB", bg=C_SIDEBAR_DARK, cursor="hand2")
@@ -428,9 +433,7 @@ def build_sidebar(parent_frame, controller, active_page):
 
     return sidebar
 
-# ==========================================
 # 1. WELCOME PAGE
-# ==========================================
 class WelcomePage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=C_MAIN_BG)
@@ -470,7 +473,12 @@ class WelcomePage(tk.Frame):
         def attempt_login(event=None):
             user = username_entry.get()
             pwd = password_entry.get()
-            if self.controller.db.verify_login(user, pwd, role):
+            
+            # Verify login now returns the account ID
+            account_id = self.controller.db.verify_login(user, pwd, role)
+            
+            if account_id:
+                self.controller.current_account_id = account_id
                 self.controller.current_user_name = user
                 self.controller.current_user_role = role 
                 dialog.grab_release() 
@@ -482,9 +490,7 @@ class WelcomePage(tk.Frame):
         dialog.bind('<Return>', attempt_login)
         ModernButton(dialog, text="Login", bg_color=C_AVAILABLE, hover_color="#059669", pady=10, command=attempt_login).pack(fill="x", padx=35)
 
-# ==========================================
 # 2. DASHBOARD PAGE
-# ==========================================
 class DashboardPage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=C_MAIN_BG)
@@ -538,9 +544,7 @@ class DashboardPage(tk.Frame):
         create_analytics_card(analytics_frame, "BUSIEST OPERATIONAL DAY", p_day, "📅")
         create_analytics_card(analytics_frame, "PEAK TRAFFIC HOUR", p_hour, "⏰")
 
-# ==========================================
 # 3. AVAILABLE SLOTS PAGE
-# ==========================================
 class AvailableSlotsPage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=C_MAIN_BG)
@@ -622,8 +626,7 @@ class AvailableSlotsPage(tk.Frame):
     def create_interactive_slot(self, parent, slot_id, row, col):
         state = self.parking_data[slot_id]
         wrapper = tk.Frame(parent, width=70, height=40)
-        wrapper.grid_propagate(False)
-        wrapper.pack_propagate(False)
+        wrapper.grid_propagate(False); wrapper.pack_propagate(False)
         wrapper.grid(row=row, column=col, padx=4, pady=6)
 
         if slot_id == self.selected_slot: 
@@ -704,7 +707,6 @@ class AvailableSlotsPage(tk.Frame):
         tk.Label(dialog, text=f"Slot {self.selected_slot}", font=("Segoe UI", 16, "bold"), bg=C_CARD_BG, fg=C_SIDEBAR).pack(pady=(25, 15))
 
         entries = {}
-        # SEARCH BAR AND ID FIELDS REMOVED
         for field in ["Driver Name", "Plate Number"]:
             tk.Label(dialog, text=field, font=("Segoe UI", 9, "bold"), bg=C_CARD_BG, fg=C_TEXT_MUTED).pack(anchor="w", padx=30)
             entry = create_modern_entry(dialog)
@@ -715,7 +717,8 @@ class AvailableSlotsPage(tk.Frame):
             driver_name = entries["Driver Name"].get()
             plate_number = entries["Plate Number"].get()
             
-            session_id = self.controller.db.book_slot(self.selected_slot, driver_name, plate_number, self.current_tab)
+            # Use the tracked current_account_id to log who issued this ticket
+            session_id = self.controller.db.book_slot(self.selected_slot, driver_name, plate_number, self.current_tab, self.controller.current_account_id)
             
             if session_id:
                 booked_slot = self.selected_slot; self.selected_slot = None; self.build_page(); dialog.destroy()
@@ -724,9 +727,7 @@ class AvailableSlotsPage(tk.Frame):
 
         ModernButton(dialog, text="Confirm", bg_color=C_AVAILABLE, hover_color="#059669", pady=10, command=save_to_db).pack(fill="x", padx=30, pady=10)
 
-# ==========================================
-# 4. HISTORY PAGE (SEARCH BAR REMOVED, CRASH FIXED)
-# ==========================================
+# 4. HISTORY PAGE 
 class HistoryPage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=C_MAIN_BG)
@@ -758,17 +759,17 @@ class HistoryPage(tk.Frame):
         filter_bar = tk.Frame(container, bg=C_CARD_BG, padx=25, pady=20)
         filter_bar.pack(fill="x")
         
-        # SEARCH BAR COMPLETELY REMOVED FROM REPORTS TAB
-        
         tk.Label(filter_bar, text="Archive:", font=("Segoe UI", 9, "bold"), fg=C_TEXT_MUTED, bg=C_CARD_BG).pack(side="left", padx=(0, 5))
-        self.time_combo = ttk.Combobox(filter_bar, values=["All Time", "Today", "This Week", "This Month", "This Year"], state="readonly", font=("Segoe UI", 9), width=12)
-        self.time_combo.set(self.current_time)
-        self.time_combo.pack(side="left")
+        time_combo = ttk.Combobox(filter_bar, values=["All Time", "Today", "This Week", "This Month", "This Year"], state="readonly", font=("Segoe UI", 9), width=12)
+        time_combo.set(self.current_time)
+        time_combo.pack(side="left")
         
-        # Dedicated function binding prevents the crash
-        self.time_combo.bind("<<ComboboxSelected>>", self.on_time_select)
+        def on_time_select(event):
+            self.current_time = time_combo.get()
+            self.render_table()
+        time_combo.bind("<<ComboboxSelected>>", on_time_select)
         
-        tk.Label(filter_bar, text="Type:", font=("Segoe UI", 9, "bold"), fg=C_TEXT_MUTED, bg=C_CARD_BG).pack(side="left", padx=(30, 5))
+        tk.Label(filter_bar, text="Type:", font=("Segoe UI", 9, "bold"), fg=C_TEXT_MUTED, bg=C_CARD_BG).pack(side="left", padx=(20, 5))
         for category in ["All", "CAR", "BIKE", "TRUCK"]:
             bg_col = C_SIDEBAR if self.current_cat == category else "#F8FAFC"
             fg_col = "white" if self.current_cat == category else C_TEXT_DARK
@@ -779,10 +780,6 @@ class HistoryPage(tk.Frame):
         self.table_data.pack(fill="both", expand=True)
         self.render_table()
 
-    def on_time_select(self, event=None):
-        self.current_time = self.time_combo.get()
-        self.render_table()
-
     def set_filter(self, category):
         self.current_cat = category
         self.build_page()
@@ -791,7 +788,8 @@ class HistoryPage(tk.Frame):
         for widget in self.table_data.winfo_children(): 
             widget.destroy()
             
-        headers = ["INV", "SLOT", "DRIVER", "PLATE", "TYPE", "TIME IN", "TIME OUT", "ACTION"]
+        # Added ISSUER column header
+        headers = ["INV", "SLOT", "DRIVER", "PLATE", "TYPE", "TIME IN", "TIME OUT", "ISSUER", "ACTION"]
         for i, h in enumerate(headers): 
             self.table_data.columnconfigure(i, weight=1)
             tk.Label(self.table_data, text=h, font=("Segoe UI", 9, "bold"), fg=C_TEXT_MUTED, bg=C_CARD_BG, anchor="w").grid(row=0, column=i, sticky="ew", pady=(0, 15))
@@ -799,7 +797,11 @@ class HistoryPage(tk.Frame):
         logs = self.controller.db.get_history(self.current_cat, self.current_time)
         
         for row_idx, record in enumerate(logs):
-            s_id, slot, name, plate, cat, entry_t, exit_t = record
+            # Unpacking the new issuer parameter
+            s_id, slot, name, plate, cat, entry_t, exit_t, issuer = record
+            
+            # Default fallback just in case old data exists
+            if not issuer: issuer = "System"
             
             tk.Label(self.table_data, text=f"#{s_id:04d}", font=("Segoe UI", 9), fg=C_TEXT_MUTED, bg=C_CARD_BG, anchor="w").grid(row=row_idx+1, column=0, sticky="ew", pady=8)
             tk.Label(self.table_data, text=slot, font=("Segoe UI", 9, "bold"), fg=C_SIDEBAR, bg=C_CARD_BG, anchor="w").grid(row=row_idx+1, column=1, sticky="ew", pady=8)
@@ -814,12 +816,13 @@ class HistoryPage(tk.Frame):
             tk.Label(self.table_data, text=t_in, font=("Segoe UI", 9), fg=C_TEXT_DARK, bg=C_CARD_BG, anchor="w").grid(row=row_idx+1, column=5, sticky="ew", pady=8)
             tk.Label(self.table_data, text=t_out, font=("Segoe UI", 9), fg=c_out, bg=C_CARD_BG, anchor="w").grid(row=row_idx+1, column=6, sticky="ew", pady=8)
             
+            # Displaying the Issuer Data
+            tk.Label(self.table_data, text=issuer, font=("Segoe UI", 9, "bold"), fg=C_TEXT_DARK, bg=C_CARD_BG, anchor="w").grid(row=row_idx+1, column=7, sticky="ew", pady=8)
+            
             print_btn = ModernButton(self.table_data, text="🖨️ Print", bg_color="#F1F5F9", hover_color="#E2E8F0", fg_color=C_TEXT_DARK, font_style=("Segoe UI", 8, "bold"), pady=4, padx=10, command=lambda id=s_id, n=name, p=plate, s=slot, c=cat, t=entry_t: self.controller.show_invoice_dialog(id, n, p, s, c, t))
-            print_btn.grid(row=row_idx+1, column=7, sticky="w")
+            print_btn.grid(row=row_idx+1, column=8, sticky="w")
 
-# ==========================================
 # 5. ADMIN SETTINGS PAGE
-# ==========================================
 class AdminSettingsPage(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent, bg=C_MAIN_BG)
